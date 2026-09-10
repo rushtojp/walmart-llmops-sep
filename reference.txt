@@ -1,5 +1,23 @@
-Azure Databricks Repo
+Additional labs references
+
+LLMOps on azure databricks reference sources
+
+https://learn.microsoft.com/en-us/azure/databricks/machine-learning/mlops/llmops
+
+DP-750 labs
 
 https://microsoftlearning.github.io/DP-750T00-Implement-Data-Engineering-Solutions-using-Azure-Databricks/
+
+Study guide for DP-750
+
+https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/dp-750
+
+A Functional Software Reference Architecture for LLM-Integrated Systems
+
+https://arxiv.org/html/2501.12904v1#S5
+
+Architecture & Design Principles for MLOps & LLMOps
+
+https://medium.com/@andrewpmcmahon629/some-architecture-design-principles-for-mlops-llmops-a505628a903e
 
 
