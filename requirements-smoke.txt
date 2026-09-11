@@ -1,0 +1,22 @@
+# SMOKE + platform stack for the LLMOps Advanced Labs (Windows workstation). Unpinned on purpose:
+# install, run test_labs.py, then `pip freeze > requirements-lock.txt` and record versions in the verification register.
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+openpyxl
+onnx
+onnxruntime
+skl2onnx
+pyspark
+jupyterlab
+ipykernel
+nbformat
+nbclient
+httpx
+# platform SDKs (cloud steps)
+azure-ai-ml
+azure-identity
+databricks-sdk
+mlflow
