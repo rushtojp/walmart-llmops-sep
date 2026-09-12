@@ -24,4 +24,8 @@ llmops reference - databricks
 
 https://www.databricks.com/blog/what-is-llmops
 
+llmops - overview and best practices
+
+https://www.tredence.com/llmops
+
 
