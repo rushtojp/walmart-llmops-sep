@@ -20,4 +20,8 @@ Architecture & Design Principles for MLOps & LLMOps
 
 https://medium.com/@andrewpmcmahon629/some-architecture-design-principles-for-mlops-llmops-a505628a903e
 
+llmops reference - databricks
+
+https://www.databricks.com/blog/what-is-llmops
+
 
