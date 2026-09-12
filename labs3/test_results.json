@@ -1,0 +1,155 @@
+[
+  {
+    "lab": "L01",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.8,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L02",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 1,
+    "seconds": 3.9,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L03",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 1,
+    "seconds": 2.3,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L04",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 2.6,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L05",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 1,
+    "seconds": 2.9,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L06",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L07",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L08",
+    "status": "EXECUTED",
+    "checks_passed": 6,
+    "gpu_steps_skipped": 0,
+    "seconds": 39.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L09",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.0,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L10",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.7,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L11",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L12",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.6,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L13",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 31.8,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L14",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L15",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 0,
+    "seconds": 2.0,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L16",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+  },
+  {
+    "lab": "L17",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.0,
+    "starter": "COMPILES",
+    "error": ""
+  }
+]
