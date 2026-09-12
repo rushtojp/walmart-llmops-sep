@@ -1,0 +1,1256 @@
+{
+ "programme": "LLMOps for Advanced Practitioners \u2014 Azure ML & Azure Databricks Lab Package",
+ "version": "v2.0 (built 2026-09-11) \u2014 Northfield Grocers edition",
+ "scenario": "Northfield Grocers \u2014 fictional supermarket chain (420 stores, online grocery, loyalty programme, 38,000 SKUs). Three LLM systems anchor the labs: a store-ops SOP assistant on handhelds, a customer shopping assistant in the app, and a catalog/merchandising engine. All data is synthetic and labelled as such.",
+ "labs": [
+  {
+   "id": "L01",
+   "title": "Platform baseline & GPU sizing",
+   "objectives": [
+    1,
+    2
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 1.5,
+   "gpu_hours": 0.75,
+   "summary": "Stand up the two lab platforms, read GPU telemetry, and size memory for dense, MoE and encoder workloads before touching a model.",
+   "use_cases": [
+    "Sizing the GPU fleet for the customer assistant ahead of the holiday peak",
+    "A100 vs H100 for the store-ops assistant under a handheld TTFT target"
+   ],
+   "done": "Memory-fit calculator returns the correct GPU count for all 4 planted workloads; nvidia-smi parser passes on the provided sample.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Read GPU telemetry",
+     "notes": [
+      "*Why:* every later lab starts from \"how much memory do I actually have?\". `nvidia-smi --query-gpu` gives a CSV we parse rather than eyeball.",
+      "*What:* on GPU compute we run the real command; in SMOKE mode we parse the provided sample so the parser is tested either way."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Confirm the platform identity",
+     "notes": [
+      "*Why:* the same notebook runs on Azure ML and Databricks; later labs branch on this. On Databricks `DATABRICKS_RUNTIME_VERSION` exists; on Azure ML compute instances `AZUREML_*`/`CI_NAME` variables exist."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Memory-fit calculator (weights + KV cache)",
+     "notes": [
+      "*Why:* the single most common LLMOps failure is an OOM at deploy time. Weights are only part of the story: the KV cache grows with `batch \u00d7 context \u00d7 layers \u00d7 2 \u00d7 (kv_heads \u00d7 head_dim) \u00d7 bytes`.",
+      "*What:* implement the formula, then apply it to four planted workloads (dense 31B-class, MoE 26B/4B-active-class, an encoder classifier, and a long-context dense model).",
+      "*Watch:* MoE models still need **all** expert weights resident \u2014 active parameters reduce compute, not memory."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Compare GPUs by workload attribute",
+     "notes": [
+      "*Why:* memory decides feasibility; interconnect and compute decide cost per token. The table is built from the SKU sheet in `content.py` so it stays in sync with the cost workbook.",
+      "*Watch:* prices are approximate, region-specific and change monthly \u2014 the workbook holds the editable anchor."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Write the decision record",
+     "notes": [
+      "*Why:* the deliverable is a defensible choice per workload, not a table. One line each: the constraint that decided it."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 1": "GPU mode runs `nvidia-smi --query-gpu=... --format=csv` directly; confirm one A100 80GB appears. On Databricks the driver node is the only node on a single-node cluster.",
+    "Step 3 worked example": "Dense 31B bf16: weights 62 GB; KV = 2\u00d760\u00d78\u00d7128\u00d72 B\u00d78192\u00d78 = 16.1 GB; total \u00d71.1 = 85.9 GB \u2192 2\u00d7 A100-80GB at 90 % usable. Have participants reproduce this on paper before running the cell."
+   },
+   "test": {
+    "lab": "L01",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.8,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L02",
+   "title": "Shipping formats: safetensors, AWQ/GPTQ, GGUF, ONNX",
+   "objectives": [
+    3
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 2.0,
+   "gpu_hours": 1.25,
+   "summary": "Convert a Gemma 4 checkpoint through the shipping formats and measure size vs quality; hand-roll group-wise quantisation first so the trade-off is understood, not assumed.",
+   "use_cases": [
+    "Compact model on store handhelds for offline product look-ups (GGUF)",
+    "Shrinking the A100 footprint of the nightly supplier-sheet extraction job (AWQ)",
+    "Taxonomy classifier shipped as ONNX inside the PIM pipeline"
+   ],
+   "done": "Hand-rolled int4 group quantiser reconstructs within tolerance; ONNX export round-trips; format table produced from measured sizes.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Hand-roll group-wise weight quantisation",
+     "notes": [
+      "*Why (pedagogy-first):* AWQ and GPTQ are both \"group-wise int4 with a per-group scale, plus a cleverer choice of which weights to protect\". If you can write the plain version you can read their papers.",
+      "*What:* quantise a weight matrix in groups of 128 along the input dimension with a symmetric scale, dequantise, and measure relative error."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Why group size and outliers matter",
+     "notes": [
+      "*Why:* a single outlier weight blows up the scale for its whole group; that is the problem AWQ (activation-aware scaling) and GPTQ (error-compensating rounding) solve differently.",
+      "*What:* plant one outlier and watch group-256 error rise; shrink the group and watch it fall \u2014 the price of smaller groups is more scale values to store."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 ONNX export round-trip (encoder-style classifier)",
+     "notes": [
+      "*Why:* ONNX is the format the catalog-NLP team ships encoder classifiers in (L08). Prove an export reproduces the source model's predictions before trusting any converter.",
+      "*What:* in SMOKE mode export a scikit-learn model with `skl2onnx` and run it in `onnxruntime`; in GPU mode swap in the `transformers` \u2192 `optimum` export of the RoBERTa-class model (lab guide \u00a7Step 3)."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Real model: safetensors \u2192 AWQ \u2192 GGUF (GPU cluster)",
+     "notes": [
+      "*Why:* the same measurement discipline on Gemma 4 E4B. Each converter is a separate library with its own version drift \u2014 pin versions in the cluster init script (lab guide \u00a7Setup).",
+      "*What:* download the checkpoint (safetensors), quantise with AutoAWQ, convert to GGUF with llama.cpp's converter, record file sizes. Library APIs are version-sensitive: confirm signatures in the docs on the day."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Quality check per format",
+     "notes": [
+      "*Why:* size without quality is meaningless. Run the same 50-prompt eval (from `eval_prompts.jsonl`) against each format's serving path and record exact-match on the attribute-extraction task."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 The format table (the deliverable)",
+     "notes": [
+      "*Why:* the team decides which format ships where \u2014 edge (GGUF), GPU serving (AWQ/safetensors), CPU batch (ONNX). The numbers are yours, not a vendor's."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 4": "`hf download google/gemma-4-e4b-it --local-dir /local_disk0/gemma4` (verify model id). AWQ: `from awq import AutoAWQForCausalLM` \u2192 `quantize(tokenizer, quant_config={'w_bit':4,'q_group_size':128,'zero_point':True,'version':'GEMM'})` \u2192 `save_quantized`. GGUF: clone llama.cpp, `python convert_hf_to_gguf.py /local_disk0/gemma4 --outtype q4_k_m --outfile gemma4.gguf` (script name and `--outtype` values are version-sensitive). Record `ls -l` sizes into `sizes`.",
+    "Step 5": "Serve each artefact: safetensors and AWQ via `vllm serve <path> --quantization awq` (for AWQ); GGUF via `llama-server -m gemma4.gguf`. Run the 50 eval prompts through each with temperature 0 and compute exact-match with the provided function."
+   },
+   "test": {
+    "lab": "L02",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 1,
+    "seconds": 3.9,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L03",
+   "title": "Serving bake-off: vLLM vs TensorRT-LLM vs SGLang",
+   "objectives": [
+    4
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 2.5,
+   "gpu_hours": 2.0,
+   "summary": "Serve the same Gemma model on three engines and benchmark throughput, TTFT p50/p95 and cold start with a harness you built and validated against a mock server first.",
+   "use_cases": [
+    "Engine choice for the customer assistant under a p95 TTFT SLA at weekend peak",
+    "Whether a TensorRT-LLM engine build is worth it for the long-lived store-ops model"
+   ],
+   "done": "Harness metrics match analytic values on the mock server; decision memo table has the team's own numbers at 3 concurrency levels.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Load the request mix",
+     "notes": [
+      "*Why:* benchmark numbers are only comparable if every engine sees the same prompts. `request_mix.jsonl` is 500 (prompt_tokens, max_new) pairs shaped like the ad-copy workload."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Build the async benchmark harness",
+     "notes": [
+      "*Why:* TTFT and throughput must be measured under concurrency, streaming, with the first token timestamped separately. A harness that is wrong by one `await` gives wrong engine rankings.",
+      "*What:* `run_benchmark(send, reqs, concurrency)` takes an async `send(req) -> async iterator of tokens`, drives it with a semaphore, and returns per-request TTFT and total time."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Validate the harness on a mock server with known latencies",
+     "notes": [
+      "*Why:* before pointing the harness at a real engine, prove it measures correctly. The mock yields its first token after exactly 50 ms and then one token per 5 ms, so TTFT p50 must be \u224850 ms and tokens/s \u2248 concurrency \u00d7 200 (minus scheduling overhead)."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Point the harness at real engines (GPU cluster)",
+     "notes": [
+      "*Why:* vLLM, SGLang and TensorRT-LLM all expose an OpenAI-compatible `/v1/completions` streaming endpoint, so one `send` implementation covers all three. Start each server per lab guide \u00a7Step 4 (ports 8001/8002/8003), and note the cold-start and engine-build times by hand \u2014 they matter as much as throughput.",
+      "*Watch:* SGLang's RadixAttention benefits from shared prefixes; use the same system prompt for every request or you will under-measure it."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Record cold start and engine-build time",
+     "notes": [
+      "*Why:* TensorRT-LLM's engine build is a one-off cost that can dominate for short-lived deployments; vLLM/SGLang start in about a minute. Time them with a stopwatch and record here \u2014 this is the number that decides the \"single long-lived model\" case."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Decision table (the deliverable)",
+     "notes": [
+      "*Why:* one table, your numbers, three concurrency levels, plus the cold-start row. Write the recommendation under it in one sentence naming the constraint that decided it."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 4": "Start servers on separate ports (one at a time to keep GPU memory free): vLLM `vllm serve google/gemma-4-e4b-it --port 8001`; SGLang `python -m sglang.launch_server --model-path google/gemma-4-e4b-it --port 8002`; TensorRT-LLM: build the engine (`trtllm-build` or the PyTorch backend `trtllm-serve` \u2014 the CLI surface changed across 2025\u201326; use whichever the installed version documents) and serve on 8003. `pip install httpx` for the harness client.",
+    "Step 5": "Stopwatch from process start to first successful `/v1/models` response = cold start. For TensorRT-LLM record engine-build time separately."
+   },
+   "test": {
+    "lab": "L03",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 1,
+    "seconds": 2.3,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L04",
+   "title": "Embeddings, vector retrieval & recall evaluation",
+   "objectives": [
+    5
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 1.0,
+   "summary": "Build retrieval for a recommendation feed: embed a catalog, load Qdrant (Databricks Vector Search as the managed alternative), rerank, and measure recall@k / MRR with a documented failure case.",
+   "use_cases": [
+    "Substitution candidates for out-of-stock items",
+    "'Similar items' on product pages",
+    "RAG over merchandising-policy documents"
+   ],
+   "done": "Brute-force and index retrieval agree on top-10 for 95% of queries; recall@10 and MRR reported; one failure case explained.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Build the corpus and ground truth",
+     "notes": [
+      "*Why:* recall needs a truth set. For \"similar items\" we define relevance as *same category and same first noun* \u2014 a deliberately imperfect proxy so the failure-case discussion in Step 6 is real."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Embed the catalog",
+     "notes": [
+      "*Why (pedagogy-first):* hand-rolled retrieval before any framework. In SMOKE mode the \"embedding\" is an L2-normalised TF-IDF vector; in GPU mode swap in a sentence-embedding model (e.g. an open embedding model from the Nemotron or Gemma ecosystem \u2014 verify the checkpoint with the recommendation team)."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Brute-force cosine retrieval (the reference)",
+     "notes": [
+      "*Why:* every approximate index (Qdrant HNSW, Databricks Vector Search) is judged against exact search. Build the exact version first."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Index retrieval (Qdrant) and agreement with brute force",
+     "notes": [
+      "*Why:* HNSW trades a little recall for a lot of speed. Measure the trade instead of assuming it. In SMOKE mode we emulate an approximate index by searching a random 60 % subset of candidates plus the exact top-3 \u2014 a stand-in that produces realistic disagreement so the agreement metric is exercised."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 recall@k and MRR",
+     "notes": [
+      "*Why:* these are the two numbers the recommendation team reports. Implement them from the definition, not from a library, once."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Document one failure case",
+     "notes": [
+      "*Why:* a retrieval report without a failure case is not credible. Find the query with the lowest MRR and explain it (typical: pack-quantity or size tokens dominating the vector so a different product with the same size outranks the same product with a different size)."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 2": "`from sentence_transformers import SentenceTransformer; m = SentenceTransformer('<checkpoint agreed with the recommendation team>'); E = m.encode(list(cat.title), normalize_embeddings=True, batch_size=256)`.",
+    "Step 4": "Qdrant: `docker run -p 6333:6333 qdrant/qdrant` on the driver (or Qdrant Cloud). `client.recreate_collection('northfield', vectors_config=VectorParams(size=E.shape[1], distance=Distance.COSINE))`; upsert points; `client.search(...limit=10)`. Databricks Vector Search alternative: create a Delta table with the embedding column, `VectorSearchClient().create_delta_sync_index(...)`, then `index.similarity_search(...)`. Both APIs are version-sensitive."
+   },
+   "test": {
+    "lab": "L04",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 2.6,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L05",
+   "title": "GPU kernel optimisation: FlashAttention & a fused kernel",
+   "objectives": [
+    6
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 2.5,
+   "gpu_hours": 1.5,
+   "summary": "Hand-roll naive vs tiled (flash-style) attention to see why memory traffic, not FLOPs, is the bottleneck; then profile a real decode step, enable FlashAttention and write one fused Triton kernel.",
+   "use_cases": [
+    "p99 latency of the substitution ranker scoring 200 candidates per request",
+    "Fewer GPUs for long-context supplier-sheet extraction"
+   ],
+   "done": "Tiled attention equals naive within 1e-5 while reading O(N) rather than O(N^2) from 'HBM'; before/after profiler traces captured.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Naive attention, and count what it reads/writes",
+     "notes": [
+      "*Why:* the N\u00d7N score matrix is materialised in memory. On a GPU that matrix lives in HBM, and moving it is what costs time \u2014 not the FLOPs."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Tiled (flash-style) attention with online softmax",
+     "notes": [
+      "*Why:* FlashAttention never materialises S or P. It streams K/V in blocks, keeps a running max and running sum per query row, and rescales the partial output as the max changes. Traffic becomes O(N\u00b7d) instead of O(N\u00b2).",
+      "*What:* implement the online-softmax recurrence. This is the single most important algorithm in modern inference; write it once by hand."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Scaling: traffic vs N",
+     "notes": [
+      "*Why:* the argument for FlashAttention is the slope, not one point. Naive traffic grows with N\u00b2, tiled with N."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Profile a real decode step (GPU cluster)",
+     "notes": [
+      "*Why:* now measure it. Load Gemma 4 E4B in `torch` with `attn_implementation=\"eager\"` and again with `\"flash_attention_2\"` (or SDPA), run 32 decode steps under `torch.profiler`, and compare kernel time share for attention.",
+      "*Watch:* FlashAttention-2 requires Ampere or newer and specific `torch`/`flash-attn` version pairs \u2014 pin them in the init script; verify availability with `flash_attn.__version__` on the day."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Write one fused kernel in Triton (GPU cluster)",
+     "notes": [
+      "*Why:* fusion (e.g. RMSNorm + residual add) removes a full read/write of the activation tensor. The lab-guide listing gives the kernel skeleton; your job is to make it match the PyTorch reference within tolerance and beat it on a 4096\u00d74096 tensor."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Before/after summary (the deliverable)",
+     "notes": [
+      "*Why:* two profiler traces and one sentence: where did the time go, and why did it move."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 4": "`model = AutoModelForCausalLM.from_pretrained(id, torch_dtype=torch.bfloat16, attn_implementation='eager').cuda()`; wrap 32 `generate` tokens in `torch.profiler.profile(activities=[CPU,CUDA])`; `prof.export_chrome_trace('eager.json')`; repeat with `attn_implementation='flash_attention_2'` (requires `flash-attn` built for the runtime's torch/CUDA \u2014 check `import flash_attn` first). Compare attention kernel share in `prof.key_averages()`.",
+    "Step 5": "Kernel skeleton: `@triton.jit def fused_rmsnorm_residual(x_ptr, r_ptr, w_ptr, out_ptr, n_cols, eps, BLOCK: tl.constexpr)` \u2014 load a row of x and residual, add, compute rsqrt(mean(x\u00b2)+eps), multiply by weight, store. Compare with `torch` reference (`allclose atol=1e-3`) and time with `triton.testing.do_bench`."
+   },
+   "test": {
+    "lab": "L05",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 1,
+    "seconds": 2.9,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L06",
+   "title": "Mixture-of-Experts serving",
+   "objectives": [
+    7
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 2.0,
+   "gpu_hours": 1.5,
+   "summary": "Implement a top-k router and measure expert load imbalance; then serve Gemma 4 26B A4B and Nemotron 3 Nano and compare active-parameter cost to dense Gemma 4 31B.",
+   "use_cases": [
+    "One multi-surface assistant (handhelds, app, contact centre) on a fixed GPU budget",
+    "Dense vs MoE for the nightly product-description job"
+   ],
+   "done": "Router load-imbalance metric computed; capacity-factor drop rate reported; MoE-vs-dense serving comparison table filled from measurements.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 A top-k router",
+     "notes": [
+      "*Why:* an MoE layer is just N small MLPs plus a router that picks k of them per token. The router is a linear layer + softmax + top-k; write it."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Measure load imbalance",
+     "notes": [
+      "*Why:* if one expert receives most tokens, the GPU holding it is the bottleneck and the others idle. Serving frameworks report this; you should be able to compute it: `max_load / mean_load` and the coefficient of variation."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Capacity factor and token dropping",
+     "notes": [
+      "*Why:* training and some serving paths cap tokens per expert at `capacity = CF \u00d7 tokens\u00d7k / experts`; overflow tokens are dropped (or routed to the next expert). Compute the drop rate for the balanced and skewed routers at CF = 1.0 and 1.25."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Active vs total parameters: compute and memory",
+     "notes": [
+      "*Why:* the MoE promise is \"31B quality at 4B FLOPs\" \u2014 but memory holds all 26B. Compute per-token FLOPs (\u22482\u00d7active params) and resident memory (all params) for the three lab models, and see which resource each is bound by.",
+      "*Watch:* the parameter figures are from the public model cards as of Sep 2026; \"~A4B\" is Google's own notation for ~4B active. Re-verify."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Serve the real models with vLLM (GPU cluster)",
+     "notes": [
+      "*Why:* measure it. Start vLLM for each model (lab guide \u00a7Step 5 \u2014 expert parallelism flags are version-sensitive), then reuse the L03 harness at concurrency 8 and 32."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 MoE-vs-dense recommendation (the deliverable)",
+     "notes": [
+      "*Why:* one page for one of the team's own workloads: which is cheaper per million tokens at the concurrency they actually run, and why."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 5": "vLLM MoE serving: `vllm serve google/gemma-4-26b-a4b-it` (single A100-80GB fits bf16 per L01) and `vllm serve nvidia/<nemotron-3-nano id> --trust-remote-code`; for multi-GPU expert parallel add `--tensor-parallel-size N` (and `--enable-expert-parallel` where supported \u2014 flag names are version-sensitive). Dense baseline: `vllm serve google/gemma-4-31b-it` needs 2\u00d7 A100 (TP=2) or int4 (`--quantization awq`) on one. Run the L03 harness at concurrency 8 and 32; record `nvidia-smi` memory."
+   },
+   "test": {
+    "lab": "L06",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L07",
+   "title": "Stand up Gemma end-to-end: LoRA fine-tune, MLflow, Unity Catalog, serve",
+   "objectives": [
+    8
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC24ads_A100_v4",
+   "hours": 3.0,
+   "gpu_hours": 2.5,
+   "summary": "Pull Gemma 4 E4B, LoRA fine-tune on Northfield supplier-sheet attribute data, evaluate with a harness, register in Unity Catalog via MLflow, and serve behind an OpenAI-compatible endpoint.",
+   "use_cases": [
+    "Attribute extraction (brand, size, pack, later allergen/dietary) from supplier sheets",
+    "House-style product descriptions respecting regulated-claim rules"
+   ],
+   "done": "Hand-rolled LoRA update reproduces W+BA; fine-tuned endpoint passes the acceptance suite and the task eval floor.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Load and inspect the training data",
+     "notes": [
+      "*Why:* the task is JSON attribute extraction from a title. Know the target schema before you tune anything."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 LoRA by hand",
+     "notes": [
+      "*Why (pedagogy-first):* LoRA freezes W and learns a low-rank update \u0394W = B\u00b7A (r \u226a d). Show that the forward pass with the adapter equals the forward pass with the merged weight, which is exactly what \"merge and unload\" does before serving."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 The evaluation harness",
+     "notes": [
+      "*Why:* fine-tuning without a harness is guessing. Exact-match on parsed JSON, plus a per-key accuracy so you know *which* attribute is failing. This same harness is reused by L09's CI gate."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Fine-tune with PEFT on the cluster",
+     "notes": [
+      "*Why:* `peft.LoraConfig` on the attention and MLP projections of Gemma 4 E4B, `trl.SFTTrainer` over the 600 prompts, 2\u20133 epochs. Log everything to MLflow. API signatures are version-sensitive \u2014 the lab guide lists the exact calls to verify."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Evaluate the fine-tuned model with the same harness",
+     "notes": [
+      "*Why:* the acceptance floor is exact_match \u2265 0.80 on the 200-item eval (set by the trainer for this synthetic task). Compare with the rule-based baseline \u2014 a tuned LLM that loses to rules should not ship."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Register in Unity Catalog via MLflow",
+     "notes": [
+      "*Why:* the registry is the hand-off point to serving and to the CI gate. `mlflow.set_registry_uri(\"databricks-uc\")`, log the merged model with `mlflow.transformers.log_model`, then `mlflow.register_model(..., \"northfield.llmops.gemma4_e4b_attr\")`. Names are three-level (catalog.schema.model)."
+     ]
+    },
+    {
+     "title": "Step 7 \u2014 Serve and run the acceptance suite",
+     "notes": [
+      "*Why:* Databricks Model Serving (GPU endpoint) or vLLM on the cluster exposes an OpenAI-compatible route. The acceptance suite is: 20 golden prompts pass, one malformed prompt returns a controlled error, p95 latency under the SLA you set in L03."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 4": "`from peft import LoraConfig; cfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, target_modules=[\u2026q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \u2014 confirm names from model.named_modules()], task_type='CAUSAL_LM')`. `from trl import SFTTrainer, SFTConfig`; format each row as prompt + target JSON; 3 epochs, lr 2e-4, bf16. `mlflow.autolog()` before training. Signatures of `SFTTrainer`/`SFTConfig` changed across trl versions \u2014 verify.",
+    "Step 5": "`predict_fn = lambda p: tokenizer.decode(model.generate(**tokenizer(p, return_tensors='pt').to('cuda'), max_new_tokens=64, do_sample=False)[0][input_len:], skip_special_tokens=True)`; `tuned = evaluate(predict_fn, evalset)`.",
+    "Step 6": "`model = model.merge_and_unload()`; `mlflow.set_registry_uri('databricks-uc')`; `mlflow.transformers.log_model(transformers_model={'model': model, 'tokenizer': tokenizer}, artifact_path='model', registered_model_name='northfield.llmops.gemma4_e4b_attr')`.",
+    "Step 7": "Databricks Model Serving: create a GPU endpoint (GPU_MEDIUM or per pricing sheet) from the UC model version; or `vllm serve /local_disk0/merged`. Run 20 golden prompts, one malformed prompt (expect HTTP 4xx, not 5xx), and the L03 harness for p95."
+   },
+   "test": {
+    "lab": "L07",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L08",
+   "title": "Encoder classifiers at catalog scale (RoBERTa-class \u2192 ONNX \u2192 Spark)",
+   "objectives": [
+    9
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 3.0,
+   "gpu_hours": 1.5,
+   "summary": "Fine-tune a RoBERTa-class classifier for taxonomy, export to ONNX, accelerate with TensorRT/onnxruntime, and score a large item set with a Spark pandas UDF; compare cost and latency with LLM zero-shot.",
+   "use_cases": [
+    "Nightly taxonomy classification of 38k listings",
+    "Promo-copy policy screening before publish"
+   ],
+   "done": "Macro-F1 above floor on held-out set; ONNX inference matches the trained model; Spark UDF scores the full set; cost-per-million-items derived from measured runtime.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Clean and split the catalog",
+     "notes": [
+      "*Why:* the catalog carries planted defects (D1 duplicates, D2 near-duplicates, D4 bad labels). A classifier trained on leaked duplicates reports a fake F1. Clean first, split by item, assert the cleaning."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Train the classifier",
+     "notes": [
+      "*Why:* the encoder path. In GPU mode: `AutoModelForSequenceClassification` from a RoBERTa-class checkpoint, 3 epochs, `Trainer`. In SMOKE mode: the linear baseline \u2014 which is also the number a RoBERTa fine-tune must beat to justify its GPU cost."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Export to ONNX and verify equivalence",
+     "notes": [
+      "*Why:* ONNX Runtime (CPU or TensorRT execution provider on GPU) is how the classifier ships. An export that silently changes predictions is a production incident; assert agreement on the full test set."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Measure single-node throughput",
+     "notes": [
+      "*Why:* cost per million items comes from items/second, not from a vendor slide. Time the ONNX session on a 50k-row batch (titles tiled from the catalog)."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Scale out with a Spark pandas UDF",
+     "notes": [
+      "*Why:* millions of items means Spark. A pandas UDF loads the ONNX session once per executor (module-level cache) and scores batches. Runs in local mode here; on Databricks the same code fans out over workers.",
+      "*Watch:* Arrow batch size (`spark.sql.execution.arrow.maxRecordsPerBatch`) controls the per-call batch \u2014 too small wastes session overhead, too large risks executor memory."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Cost per million items, and the LLM zero-shot comparison",
+     "notes": [
+      "*Why:* the business question. Encoder cost = (VM $/hr \u00f7 measured items/hr) \u00d7 1e6. LLM zero-shot cost = tokens per item \u00d7 $/token (per-token or provisioned-throughput rate). Enter your measured encoder throughput on the GPU cluster and the LLM token cost from your platform's pricing page; the formula is what matters.",
+      "*Watch:* the SKU price below comes from `content.py` and is approximate; the workbook holds the editable anchor."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 2": "`AutoModelForSequenceClassification.from_pretrained('roberta-base', num_labels=8)` (or the team's domain checkpoint); `Trainer` 3 epochs, lr 2e-5, max_length 64. Export: `optimum-cli export onnx --model <dir> --task text-classification /tmp/roberta_onnx`. In the Spark UDF replace the sklearn session with `onnxruntime.InferenceSession(path, providers=['TensorrtExecutionProvider','CUDAExecutionProvider'])` on GPU workers; tokenise in the UDF.",
+    "Step 5": "Multi-node: cluster with 2\u20134 T4 workers; set `spark.task.resource.gpu.amount 1`; repartition to workers\u00d72. Compare items/s vs single node; compute cost per million from measured rate \u00d7 VM $/hr (include all workers)."
+   },
+   "test": {
+    "lab": "L08",
+    "status": "EXECUTED",
+    "checks_passed": 6,
+    "gpu_steps_skipped": 0,
+    "seconds": 39.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L09",
+   "title": "Evaluation harness & CI/CD gating (with allergen zero-tolerance check)",
+   "objectives": [
+    10,
+    12
+   ],
+   "platform": "Azure ML",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 0.5,
+   "summary": "Build an eval harness with exact-match, rubric and regression checks; wire it as a gate in an Azure ML pipeline / MLflow registry promotion so a regressed model cannot ship.",
+   "use_cases": [
+    "Gating a model swap in the catalog-extraction service",
+    "Allergen accuracy as a blocking, zero-tolerance release check"
+   ],
+   "done": "Harness blocks the planted regressed candidate and passes the good one; gate decision is written to the run.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Golden set and candidates",
+     "notes": [
+      "*Why:* a gate compares a candidate to a baseline on a fixed golden set. We simulate two candidates with deterministic predictors: `good` (correct except pack_qty parsing edge cases) and `regressed` (drops the \"size\" key 15 % of the time \u2014 a realistic prompt-template regression)."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 The harness: exact match, per-key, schema, latency",
+     "notes": [
+      "*Why:* one metric hides regressions. Schema validity catches missing keys even when other fields are right; per-key accuracy tells you *what* broke; latency guards cost."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 The gate",
+     "notes": [
+      "*Why:* a gate is a policy: absolute floors *and* no regression beyond a tolerance versus the current champion. Write it so the reasons are recorded, not just a boolean."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Zero-tolerance class: allergen answers by structured lookup",
+     "notes": [
+      "*Why:* an allergen error is a safety incident, not a quality dip. Northfield never lets a model *generate* an allergen statement \u2014 the answer is a structured lookup in the product master \u2014 and the gate evaluates it by exact match against the allergen golden set. One error blocks the release, regardless of every other metric.",
+      "*What:* implement the lookup, run the 100-question allergen golden set, and add a blocking rule to the gate. Then plant one wrong row in a copy of the product master to prove the rule fires."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Write the decision record",
+     "notes": [
+      "*Why:* CI must leave evidence. A JSON record with metrics, thresholds, reasons and a timestamp is what an auditor (and your future self) reads."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Wire it into Azure ML (workspace required)",
+     "notes": [
+      "*Why:* as a pipeline component, a non-zero exit fails the job and blocks the downstream registration step. The component YAML and `azure-ai-ml` SDK calls are in the lab guide \u00a7Step 6 (SDK v2; signatures are version-sensitive \u2014 verify). On Databricks: run this notebook as a job task; on failure the next task (`mlflow.register_model` + alias `champion`) is skipped."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 5": "Azure ML: package `harness()`+`gate()` as `eval_gate.py` that exits 1 on failure; component YAML `type: command`, `command: python eval_gate.py --candidate ${{inputs.candidate}} --golden ${{inputs.golden}}`; pipeline: train \u2192 eval_gate \u2192 register (`azure-ai-ml` `@pipeline` decorator). Submit for both candidates; the regressed run must fail at eval_gate. Databricks: Job with task 1 = this notebook, task 2 = register + set alias `champion` (`MlflowClient().set_registered_model_alias`), depends-on task 1."
+   },
+   "test": {
+    "lab": "L09",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.0,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L10",
+   "title": "Monitoring, drift & injected-fault alerting",
+   "objectives": [
+    13
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 0.5,
+   "summary": "Compute PSI/KS drift, latency and cost-per-request metrics; build a Lakehouse Monitoring / Azure ML model-monitor view and prove one alert fires on an injected fault.",
+   "use_cases": [
+    "Promo-week and holiday drift in customer questions",
+    "Silent provider model update raising cost per conversation"
+   ],
+   "done": "PSI flags the planted drifted feature and not the stable ones; injected latency fault raises the alert.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Load the four-week window (week 4 is a promo week)",
+     "notes": []
+    },
+    {
+     "title": "Step 2 \u2014 Population Stability Index by hand",
+     "notes": [
+      "*Why:* PSI is what most monitoring products report; know its definition (\u03a3 (p\u2212q)\u00b7ln(p/q) over bins) and its usual thresholds (<0.1 stable, 0.1\u20130.25 watch, >0.25 drift)."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Cross-check with a KS test",
+     "notes": [
+      "*Why:* PSI depends on binning; the two-sample KS statistic does not. Two methods agreeing is stronger evidence than one."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Latency and cost-per-request, then inject a fault",
+     "notes": [
+      "*Why:* an alert you have never seen fire is not an alert. Compute p95 latency and cost per request per week, then inject a +40 % latency fault into a copy of week 4 and confirm the rule triggers."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Configure the managed monitor (platform)",
+     "notes": [
+      "*Why:* the hand-rolled version explains the numbers; the managed one runs unattended. Databricks: `Lakehouse Monitoring` on an inference table with a baseline table = week 1. Azure ML: model monitor with data-drift signal on the deployment's collected data. Both are configured through the UI/SDK per lab guide \u00a7Step 5 \u2014 API names are version-sensitive."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 5": "Databricks: enable inference tables on the L07 endpoint; `from databricks.sdk.service.catalog import MonitorInferenceLog` (or `databricks.lakehouse_monitoring` \u2014 the API moved; verify) \u2014 create a monitor with `baseline_table` = week-1 snapshot, granularity 1 day. Azure ML: on the deployment, enable data collection; create a model monitor with the Data drift signal and a baseline dataset; set alert notification. Screenshot the drift chart."
+   },
+   "test": {
+    "lab": "L10",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.7,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L11",
+   "title": "Distributed serving: tensor parallel & autoscaling on Ray",
+   "objectives": [
+    14
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC96ads_A100_v4",
+   "hours": 2.5,
+   "gpu_hours": 1.5,
+   "summary": "Shard a matmul by hand to see tensor parallelism; serve Gemma 4 31B with TP=4 via vLLM on Ray-on-Databricks; simulate autoscaling and a node loss.",
+   "use_cases": [
+    "Saturday-morning and Christmas peak scaling for the customer assistant",
+    "Two-replica availability for the store-ops assistant in trading hours"
+   ],
+   "done": "Sharded matmul equals full within 1e-6; autoscaler simulation keeps p95 queue time under the SLA; TP=4 endpoint survives a simulated worker loss.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Tensor parallelism by hand",
+     "notes": [
+      "*Why:* TP splits a weight matrix across GPUs. Column-parallel: each GPU computes part of the output columns, then concatenate. Row-parallel: each GPU holds part of the input dimension, then all-reduce (sum). Do both and prove they equal the unsharded matmul."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 What TP costs: the all-reduce",
+     "notes": [
+      "*Why:* row-parallel needs a sum across GPUs every layer \u2014 that is why NVLink SKUs matter (L01). Count the communication volume per layer for the 8\u00d74096 activation and compare it to the compute saved."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Autoscaling simulation",
+     "notes": [
+      "*Why:* before touching a real autoscaler, simulate one. Arrivals follow a daily curve; each replica serves `cap` requests/s; scale up when queue p95 exceeds the SLA, scale down when utilisation is low, with a minimum of 2 replicas for HA. At minute 300 a replica dies."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Real TP=4 serving on Ray-on-Databricks (cluster)",
+     "notes": [
+      "*Why:* `ray.util.spark.setup_ray_cluster` starts Ray across Databricks workers; vLLM with `--tensor-parallel-size 4` shards Gemma 4 31B over the 4 A100s. Then kill one worker process and watch Ray Serve reschedule. Exact flags/APIs are version-sensitive \u2014 lab guide \u00a7Step 4."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 4": "`from ray.util.spark import setup_ray_cluster; setup_ray_cluster(num_worker_nodes=1, num_gpus_worker_node=4)`; `ray.init()`; `vllm serve google/gemma-4-31b-it --tensor-parallel-size 4 --distributed-executor-backend ray`. Run L03 harness at concurrency 32. Simulate loss: `ray.kill` a worker actor or restart the worker VM from the cluster UI; record seconds until `/v1/models` answers again. Flag names are version-sensitive."
+   },
+   "test": {
+    "lab": "L11",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L12",
+   "title": "A/B testing & multi-armed bandits for rankers",
+   "objectives": [
+    15
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 1.5,
+   "gpu_hours": 0.0,
+   "summary": "Run an A/B test and a Thompson-sampling bandit over a simulated click log for two ranker versions; document the decision and the governance record.",
+   "use_cases": [
+    "Rolling out a substitution ranker with bounded regret",
+    "Comparing two promo-copy models on click-through"
+   ],
+   "done": "Bandit converges to the planted better arm; cumulative regret below A/B; decision record written.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 The click log",
+     "notes": [
+      "*Why:* arm A and B are two ranker versions. The log has a planted truth (D6): B's CTR is ~30 % higher. Neither method may peek \u2014 they only see clicks as they arrive."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Fixed-split A/B test with a significance check",
+     "notes": [
+      "*Why:* the classic approach: 50/50 for N impressions, then a two-proportion z-test. Regret = impressions sent to the worse arm \u00d7 CTR gap."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Thompson sampling bandit",
+     "notes": [
+      "*Why:* keep a Beta(\u03b1, \u03b2) posterior per arm; each impression, sample from both, serve the larger. Traffic shifts to the better arm as evidence accumulates, so regret grows sub-linearly."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Governance record",
+     "notes": [
+      "*Why:* whichever method you use, the decision needs a record: hypothesis, method, sample size, result, decision, owner, date. This is what the model registry alias change (`champion`) links to."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Note": "No GPU. On Databricks the same notebook runs on a small CPU cluster; the decision record can be written to a Delta table `northfield.llmops.experiment_decisions` instead of /tmp."
+   },
+   "test": {
+    "lab": "L12",
+    "status": "EXECUTED",
+    "checks_passed": 3,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.6,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L13",
+   "title": "Data preparation pipelines: dedup, PII, data cards (Spark + Delta)",
+   "objectives": [
+    16
+   ],
+   "platform": "Databricks",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 0.0,
+   "summary": "Build the fine-tune/eval corpus pipeline in PySpark: exact and near-duplicate removal, PII redaction, split leakage checks, Delta write, and a data card \u2014 all planted defects asserted.",
+   "use_cases": [
+    "Supplier-sheet corpus for extraction fine-tuning",
+    "Eval-set hygiene before a model swap; supplier rep PII redaction"
+   ],
+   "done": "All 5 planted defects (D1\u2013D5) are detected and removed; leakage check passes; data card generated.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Load with Spark",
+     "notes": []
+    },
+    {
+     "title": "Step 2 \u2014 Exact and near-duplicate removal (D1, D2)",
+     "notes": [
+      "*Why:* duplicates in a fine-tune corpus over-weight examples; duplicates across train/eval inflate scores. Exact first (item_id + title), then a normalised key (lower, collapse whitespace)."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Label validation (D4)",
+     "notes": [
+      "*Why:* an out-of-vocabulary label silently becomes a new class. Enforce the allowed set and quarantine the rest."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 PII redaction (D3)",
+     "notes": [
+      "*Why:* supplier notes leak contact details; a fine-tuned model will happily reproduce them. Regex redaction for emails and phone numbers is the minimum; log the count so the data card can state it."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Train/eval leakage check (D5)",
+     "notes": [
+      "*Why:* ten eval prompts were planted verbatim in train. Detect them with a join on the prompt text and remove them from eval (never from train \u2014 eval must stay clean and independent)."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Write Delta and the data card",
+     "notes": [
+      "*Why:* Delta gives versioned, ACID tables in Unity Catalog; the data card records provenance and every transformation count. On Databricks write `format(\"delta\")` to `northfield.llmops.catalog_clean`; locally we write Parquet and keep the same card."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 6": "On Databricks the notebook writes `format('delta')` automatically. Save as a table instead: `cat3.write.mode('overwrite').saveAsTable('northfield.llmops.catalog_clean')`; then `DESCRIBE HISTORY northfield.llmops.catalog_clean` to show versioning."
+   },
+   "test": {
+    "lab": "L13",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 31.8,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L14",
+   "title": "Guardrails and structured outputs: input, retrieval and output gates",
+   "objectives": [
+    10,
+    13,
+    16
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 0.0,
+   "summary": "Build the three guardrail gates for the customer assistant \u2014 PII masking and injection detection at input, currency/trust filtering at retrieval, schema/claims/allergen-provenance validation at output \u2014 with every decision recorded on the response.",
+   "use_cases": [
+    "Blocking prompt-injection probes for staff discount codes",
+    "Masking customer phone numbers before a hosted model call",
+    "Refusing generated allergen claims not backed by the product master"
+   ],
+   "done": "input gate masks all planted PII and flags 5 injection probes; retrieval gate drops the stale SOP chunk; output gate rejects 3 planted bad outputs and passes 3 good ones; decisions recorded.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Input gate: PII masking",
+     "notes": [
+      "*Why:* a customer's phone number or email must not reach a hosted model or the logs. Regex masking is the minimum (Presidio adds NER-based detection in production)."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Input gate: prompt-injection detection",
+     "notes": [
+      "*Why:* the model must not follow instructions hidden in user text. Pattern rules catch the obvious probes; production adds a classifier. Score, don't just block \u2014 the score goes on the response."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Retrieval gate: trusted and current sources only",
+     "notes": [
+      "*Why:* a stale SOP (D8: the superseded 48-hour refund rule) must never be retrieved into a prompt. Filter by version currency and source trust before ranking."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Output gate: schema, banned claims, allergen provenance",
+     "notes": [
+      "*Why:* the model's answer is a draft until validated. Three checks: (1) it parses to the expected JSON schema; (2) no regulated claim appears unless the product master carries the flag; (3) any allergen statement must cite the product master, never be generated."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Gate decisions travel with the response",
+     "notes": [
+      "*Why:* governance, QA and engineering each need a different signal from the same request. Assemble the response object the way the serving layer would."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Note": "No GPU. Production equivalents: Microsoft Presidio for PII (NER-based), Guardrails AI / NeMo Guardrails for rails, provider structured outputs (JSON schema / tool calling) for format enforcement. Wire the three gate functions around the served endpoint from L07."
+   },
+   "test": {
+    "lab": "L14",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L15",
+   "title": "RAG for the store-ops assistant: retrieval, grounding and faithfulness evaluation",
+   "objectives": [
+    5,
+    10
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.5,
+   "gpu_hours": 0.5,
+   "summary": "Index the SOP corpus, retrieve with a currency filter, answer with citations and an out-of-scope decline, then hand-roll faithfulness and answer relevancy on the store-ops golden set and catch a planted prompt regression.",
+   "use_cases": [
+    "SOP and HR-policy Q&A on associate handhelds with SOP-version citations",
+    "Catching a stale-index or prompt regression before associates act on it"
+   ],
+   "done": "retrieval hits the right SOP area for \u226590% of golden questions; stale chunk never cited; out-of-scope declined; v4 prompt regression detected by faithfulness.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Ingest the SOP chunks and build the index",
+     "notes": [
+      "*Why:* the index is an artefact: it carries the chunk ids, versions and effective dates that every answer will cite."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Retrieve with a currency filter",
+     "notes": [
+      "*Why:* L14's retrieval gate applied before ranking: superseded versions never reach the prompt."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Build the prompt, generate, cite",
+     "notes": [
+      "*Why:* the prompt carries the question, the retrieved chunks and the instruction to answer only from them. In SMOKE mode the \"model\" is a deterministic extractive answerer; in GPU mode call the served model."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Faithfulness and answer relevancy, by hand",
+     "notes": [
+      "*Why (pedagogy-first):* Ragas' faithfulness = fraction of answer claims supported by the context; answer relevancy = does the answer address the question. Implement deterministic versions (sentence-level support by lexical overlap; relevancy = expected phrase present) so the mechanics are clear before an LLM judge replaces them."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 The golden-set report the store-ops owner signs",
+     "notes": [
+      "*Why:* the deliverable is a per-area table that the function owner can read: which areas are weak, whether citations are present, and the version pair compared."
+     ]
+    },
+    {
+     "title": "Step 6 \u2014 Real embeddings and an LLM judge (cluster)",
+     "notes": [
+      "*Why:* replace TF-IDF with a sentence-embedding model and the deterministic judge with Ragas (faithfulness, answer_relevancy) using a judge model different from the serving model. Keep the golden set and the report format identical so the two runs are comparable."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Step 6": "Embeddings: `SentenceTransformer('<agreed checkpoint>').encode(sops.text, normalize_embeddings=True)`. Judge: `from ragas import evaluate; from ragas.metrics import faithfulness, answer_relevancy` on a Dataset with question/contexts/answer columns; set the judge LLM to a different provider/model than the serving model. APIs are version-sensitive."
+   },
+   "test": {
+    "lab": "L15",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 0,
+    "seconds": 2.0,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L16",
+   "title": "Tracing, lineage and replay-with-fixed-retrieval",
+   "objectives": [
+    13,
+    16
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 2.0,
+   "gpu_hours": 0.0,
+   "summary": "Forensics on a wrong SOP answer: segment the trace log by prompt version, reconstruct one request, replay it with retrieval fixed to attribute the fault, and use chunk lineage to isolate a bad ingestion run's blast radius.",
+   "use_cases": [
+    "Incident forensics on a wrong refund-window answer",
+    "Proving to compliance which policy version an answer used",
+    "Deleting only the vectors from a bad ETL run"
+   ],
+   "done": "failures segmented by prompt version; replay under the previous prompt fixes them (fault = prompt); lineage isolates exactly the stale chunk.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Load the trace log and segment failures",
+     "notes": [
+      "*Why:* every request already carries request_id, prompt_version, index_version, retrieved chunk ids, answer, latency, tokens and feedback. Segment by version before guessing."
+     ]
+    },
+    {
+     "title": "Step 2 \u2014 Reconstruct one failed request",
+     "notes": [
+      "*Why:* forensics starts from a single request id: what was retrieved, from which index, with which prompt."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Replay with fixed retrieval",
+     "notes": [
+      "*Why:* the definitive RAG debugging move. Bypass search, hand the model the exact chunks from the trace, ask the same question. Correct now \u2192 retrieval fetched the wrong context. Still wrong \u2192 prompt/model. In SMOKE mode the 'model' is the deterministic answerer from L15 (v3 grounded, v4 not)."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Lineage: isolate a bad ingestion run",
+     "notes": [
+      "*Why:* chunks carry chunk_id, version and effective date (and, in production, a source-document hash and ETL run id). When ingestion run 2025-01 is found to have loaded the stale refund rule, delete exactly its vectors."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 The incident record",
+     "notes": [
+      "*Why:* what the system knew, what was replayed, what was deleted, what changed. This is the artefact compliance asks for."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Note": "Trace store on the cluster: MLflow Tracing (`mlflow.trace`) or LangSmith / OpenTelemetry exporters into a Delta table `northfield.llmops.traces` with the same columns as trace_log.jsonl. Replay = the same generate() call with `contexts` supplied instead of retrieved."
+   },
+   "test": {
+    "lab": "L16",
+    "status": "EXECUTED",
+    "checks_passed": 5,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.1,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  },
+  {
+   "id": "L17",
+   "title": "Token economics, model routing and capacity planning",
+   "objectives": [
+    2,
+    4,
+    15
+   ],
+   "platform": "Both",
+   "sku": "Standard_NC4as_T4_v3",
+   "hours": 1.5,
+   "gpu_hours": 0.0,
+   "summary": "Cost per conversation for hosted, self-hosted and routed serving; break-even GPU utilisation; a small-model-first routing policy; and a replica plan from the Saturday and Christmas arrival curve \u2014 all formula-driven from measured inputs.",
+   "use_cases": [
+    "Cost per resolved customer conversation for the finance review",
+    "GPU replica plan for Saturday and holiday peaks",
+    "Routing policy between a small self-hosted model and a hosted frontier model"
+   ],
+   "done": "cost per conversation for three serving options; break-even utilisation found; routing 80% simple traffic cuts cost >60%; replica plan grows with the arrival curve.",
+   "steps": [
+    {
+     "title": "Step 1 \u2014 Conversation token profile from the request mix",
+     "notes": []
+    },
+    {
+     "title": "Step 2 \u2014 Hosted cost per conversation",
+     "notes": [
+      "*Watch:* prices are placeholders; use the provider's list on the day."
+     ]
+    },
+    {
+     "title": "Step 3 \u2014 Self-hosted cost per conversation and break-even utilisation",
+     "notes": [
+      "*Why:* a GPU costs the same idle or busy. Cost per conversation = GPU $/hr \u00f7 conversations per hour at the utilisation you actually achieve."
+     ]
+    },
+    {
+     "title": "Step 4 \u2014 Routing policy: small model first, frontier for the hard 20%",
+     "notes": [
+      "*Why:* most shopping questions are simple (stock, aisle, price). Route by a cheap classifier; escalate the rest. Compute blended cost."
+     ]
+    },
+    {
+     "title": "Step 5 \u2014 Capacity plan for the peak",
+     "notes": [
+      "*Why:* replicas are sized on the arrival curve, not the average. Saturday 10:00 \u2248 4\u00d7 Tuesday 15:00; Christmas week \u2248 2\u00d7 a normal Saturday."
+     ]
+    }
+   ],
+   "platform_steps": {
+    "Note": "Replace PLACEHOLDER rates with the provider's current price list and `measured_tok_s` with the L03 harness result at target concurrency on the chosen SKU; keep the formulas."
+   },
+   "test": {
+    "lab": "L17",
+    "status": "EXECUTED",
+    "checks_passed": 4,
+    "gpu_steps_skipped": 0,
+    "seconds": 1.0,
+    "starter": "COMPILES",
+    "error": ""
+   }
+  }
+ ],
+ "common_setup": {
+  "Databricks": [
+   "Workspace: Premium tier, Unity Catalog enabled. Create catalog `northfield`, schema `llmops`, volume `labdata`; upload the `data/` folder to `/Volumes/northfield/llmops/labdata`.",
+   "Cluster: single-node, Databricks Runtime ML **GPU** (latest LTS), node type per lab (NC24ads_A100_v4 for A100 labs, NC4as_T4_v3 for T4 labs, NC96ads_A100_v4 for L11). Auto-terminate 30 min.",
+   "Init script (cluster-scoped) installs pinned versions: `pip install skl2onnx onnx onnxruntime-gpu httpx nbformat vllm sglang[all] transformers peft trl accelerate auto-awq optimum qdrant-client triton flash-attn --no-build-isolation`. Pin exact versions in the script after testing on the runtime; record them in the Verification Register.",
+   "Secrets: model-hub token in a Databricks secret scope `northfield` key `hf_token`; export as `HF_TOKEN` in the notebook via `dbutils.secrets.get`.",
+   "Notebooks: import the whole package folder, or upload `data/` to a Unity Catalog volume (the header also searches /Workspace and /Volumes for catalog_items.csv). Packages: labs install their own extras lazily and without a restart (L02/L08: onnx, onnxruntime, skl2onnx; L08: pyarrow; L03 GPU: httpx) via `ensure_packages()`. Optional: run `labs/L00_Setup/L00_setup.ipynb` once, or add the packages as cluster libraries, so nothing installs during a session. Rule after any manual %pip + restart: Run All from the top."
+  ],
+  "Azure ML": [
+   "Workspace with a GPU compute instance (Standard_NC24ads_A100_v4 for GPU labs, Standard_NC4as_T4_v3 or CPU for L09/L10). Idle shutdown 30 min.",
+   "Environment: curated `AzureML-ACPT` (PyTorch + CUDA) image or a custom conda env with the same pip list as the Databricks init script.",
+   "Upload `data/` to the workspace default datastore; set `DATA_DIR` in the notebook to the mounted path.",
+   "For managed online endpoints (L03 alternative): build a custom container from the vLLM image and deploy with `azure-ai-ml` SDK v2 \u2014 `ManagedOnlineEndpoint` + `ManagedOnlineDeployment` on a `Standard_NC24ads_A100_v4` instance."
+  ]
+ },
+ "troubleshoot": [
+  [
+   "OOM at model load",
+   "Check L01 memory-fit; add `--max-model-len 4096` or `--gpu-memory-utilization 0.85` to vLLM; use int4 (AWQ) for 31B on one A100."
+  ],
+  [
+   "`flash_attn` import error",
+   "Wheel/torch/CUDA mismatch. Install the wheel matching the runtime's torch; if unavailable, use `attn_implementation='sdpa'` and note it in the Verification Register."
+  ],
+  [
+   "Model download 403/401",
+   "HF token missing or gated model licence not accepted on the hub account."
+  ],
+  [
+   "Spark UDF slow",
+   "Arrow batch too small (`spark.sql.execution.arrow.maxRecordsPerBatch`), or session recreated per call \u2014 check the module-level cache."
+  ],
+  [
+   "`#NAME?` in workbook",
+   "Opened in a viewer that cannot evaluate; open in Excel/LibreOffice and recalculate."
+  ],
+  [
+   "Notebook says SMOKE on a GPU node",
+   "`nvidia-smi` not on PATH in the kernel; set `os.environ['LAB_MODE']='GPU'` in the header cell."
+  ]
+ ],
+ "defects": {
+  "D1": "catalog_items.csv \u2014 40 exact-duplicate rows (same item_id and title)",
+  "D2": "catalog_items.csv \u2014 25 near-duplicate titles differing only by case/whitespace",
+  "D3": "supplier_descriptions.csv \u2014 30 supplier sheets containing synthetic rep PII (emails, phone numbers)",
+  "D4": "catalog_items.csv \u2014 15 rows with taxonomy label outside the allowed set ('UNKNOWN_CAT')",
+  "D5": "eval_prompts.jsonl \u2014 10 eval items that also appear verbatim in train (leakage)",
+  "D6": "click_log.csv \u2014 substitution ranker B has a true CTR ~40% higher than A (bandit must find it)",
+  "D7": "monitoring_window.csv \u2014 feature 'title_len' drifts in week 4 (promo week); 'attr_count' does not",
+  "D8": "sop_chunks.csv \u2014 one superseded SOP chunk (v2, 48-hour refund rule) sits alongside the current v3 (24 hours); retrieval gate / currency filter must drop it"
+ },
+ "corrections": [
+  [
+   "C1",
+   "make_data.py",
+   "Imperial size attribute emitted as 'in' instead of e.g. '1/4 in'; eval targets wrong (L07/L09 baseline scored 0.40).",
+   "Fixed size = tokens[3] (+ ' in'); regenerated data; L07 rule_based and L09 _base aligned."
+  ],
+  [
+   "C2",
+   "L02 Step 1",
+   "int4 reconstruction threshold set to 8% \u2014 too tight; uniform int4 on Gaussian weights is ~11\u201312%.",
+   "Threshold 15% for int4, added int8 <1% check; explanation in the check message."
+  ],
+  [
+   "C3",
+   "L02 Step 3 / L08 Step 3",
+   "onnxruntime StringNormalizer op requires an en_US.UTF-8 locale; absent on minimal images and some Databricks runtimes.",
+   "Lowercase in pandas, export with lowercase=False so the graph has no locale-dependent op."
+  ],
+  [
+   "C6",
+   "header / L02 / L08",
+   "ONNX stack was a hard requirement in every lab header, so all 17 labs failed on a cluster missing packages only L02/L08 use; pandas UDFs also need pyarrow (absent on clean venvs).",
+   "Header no longer requires extras. ensure_packages() installs lazily, only in the lab that needs it, via sys.executable -m pip (no restart). Verified in a clean venv lacking onnx/skl2onnx/pyarrow: all 17 labs pass."
+  ],
+  [
+   "C4",
+   "header / Databricks",
+   "Auto pip-install + dbutils.library.restartPython() in the header aborted Run All and looped when the install landed in a different Python; header variables then undefined (NameError: pd).",
+   "Header no longer installs or restarts: it checks imports and points to L00_setup (one-time %pip + restart). DATA_DIR resolution now tries env \u2192 package-relative \u2192 UC volume and fails with a clear message."
+  ],
+  [
+   "C5",
+   "make_data D6",
+   "Regenerated RNG stream reduced the planted CTR gap below the assertion margin.",
+   "B CTR raised to 0.056 (~40% above A)."
+  ]
+ ],
+ "gpu_skus": [
+  [
+   "Standard_NC4as_T4_v3",
+   1,
+   16,
+   0.526,
+   "1x T4 \u2014 thundercompute.com Azure GPU guide, reviewed 1 Sep 2026 (approx)"
+  ],
+  [
+   "Standard_NC24ads_A100_v4",
+   1,
+   80,
+   3.673,
+   "1x A100 80GB \u2014 azurespeed / vantage / holori agree, Jul\u2013Sep 2026"
+  ],
+  [
+   "Standard_NC48ads_A100_v4",
+   2,
+   160,
+   7.35,
+   "2x A100 \u2014 vantage.sh, approx"
+  ],
+  [
+   "Standard_NC96ads_A100_v4",
+   4,
+   320,
+   14.69,
+   "4x A100 \u2014 thundercompute.com, approx"
+  ],
+  [
+   "Standard_NC40ads_H100_v5",
+   1,
+   94,
+   6.98,
+   "1x H100 NVL \u2014 thundercompute.com, approx"
+  ]
+ ]
+}

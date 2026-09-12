@@ -1,0 +1,12 @@
+chunk_id,area,version,effective,text
+SOP-000,food-safety,v3,2026-07-01,Chilled products must be held at or below 5 C; record temperatures twice per shift.
+SOP-001,food-safety,v3,2026-07-01,Frozen products must be held at -18 C or colder; discard if thawed above -12 C for more than 2 hours.
+SOP-002,allergens,v3,2026-07-01,Allergen labels must be checked on every delivery; any unlabelled item is quarantined until the supplier confirms.
+SOP-003,promotions,v3,2026-07-01,Promotional price tags are applied Wednesday night and removed Tuesday night; mismatches are escalated to the duty manager.
+SOP-004,returns,v3,2026-07-01,Refunds for chilled goods are accepted within 24 hours with a receipt; frozen goods are not resaleable and are disposed of.
+SOP-005,returns,v3,2026-07-01,Refunds over 50 in value require duty-manager approval.
+SOP-006,hr-policy,v3,2026-07-01,Breaks: a 30 minute unpaid break for shifts over 6 hours; a further 15 minute paid break for shifts over 9 hours.
+SOP-007,hr-policy,v3,2026-07-01,Sickness must be reported to the store manager at least 2 hours before shift start.
+SOP-008,planogram,v3,2026-07-01,Planogram resets follow the weekly reset sheet; end-caps are reset every Wednesday before opening.
+SOP-009,safety,v3,2026-07-01,Spillages are marked with a wet-floor sign immediately and cleaned within 10 minutes.
+SOP-004-old,returns,v2,2025-01-01,Refunds for chilled goods are accepted within 48 hours with a receipt.
